@@ -1,0 +1,10 @@
+venv/
+__pycache__/
+*.pyc
+.env
+*.env
+assets/generated_images/
+*.png
+*.jpg
+*.mp4
+stable-diffusion-webui/
