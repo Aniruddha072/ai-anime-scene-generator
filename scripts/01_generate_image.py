@@ -1,66 +1,128 @@
-# -*- coding: utf-8 -*-
 """
-Stage 2 — Image Generation using HuggingFace InferenceClient
+scripts/01_generate_image.py
+Generates anime-style images from a text prompt.
+Supports two backends: 'replicate' (API) or 'local' (diffusers, no GPU needed).
 """
-
-import sys
-sys.stdout.reconfigure(encoding='utf-8')
 
 import os
-import time
+import yaml
+import requests
 from pathlib import Path
 from dotenv import load_dotenv
-from huggingface_hub import InferenceClient
 
-# ─── Paths ─────────────────────────────────────────────────
-SCRIPTS_DIR = Path(__file__).parent
-PROJECT_ROOT = SCRIPTS_DIR.parent
-sys.path.insert(0, str(SCRIPTS_DIR))
+load_dotenv()
 
-from prompt_engine import build_prompt
+def load_config() -> dict:
+    with open("config.yaml") as f:
+        return yaml.safe_load(f)
 
-# ─── Load ENV ───────────────────────────────────────────────
-load_dotenv(PROJECT_ROOT / ".env")
+# ── Prompt builder (your prompt_engine.py output) ───────────────────────────
 
-HF_TOKEN = os.getenv("HF_API_TOKEN")
+POSITIVE_SUFFIX = (
+    ", masterpiece, best quality, ultra detailed, anime style, "
+    "cinematic composition, by Makoto Shinkai, Studio Ghibli palette, 4k"
+)
+NEGATIVE_PROMPT = (
+    "lowres, bad anatomy, worst quality, blurry, deformed, "
+    "ugly, watermark, text, 3d render, realistic"
+)
 
-client = InferenceClient(token=HF_TOKEN)
-
-OUTPUT_DIR = PROJECT_ROOT / "assets" / "generated_images"
-OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+def build_prompt(raw: str) -> tuple[str, str]:
+    return raw.strip() + POSITIVE_SUFFIX, NEGATIVE_PROMPT
 
 
-# ─── Generator ──────────────────────────────────────────────
-def generate_image(raw_text, scene_preset=None, filename="output"):
-    prompts = build_prompt(raw_text, scene_preset)
+# ── Backend: Replicate API ───────────────────────────────────────────────────
 
-    print(f"\n[IMG] Generating image using HF client...")
-    print(f"Prompt: {raw_text}")
+def generate_via_replicate(prompt: str, negative: str, cfg: dict) -> bytes:
+    import replicate
+    token = os.getenv("REPLICATE_API_TOKEN")
+    if not token:
+        raise EnvironmentError("REPLICATE_API_TOKEN not set in .env")
+    os.environ["REPLICATE_API_TOKEN"] = token
 
-    start = time.time()
+    output = replicate.run(
+        cfg["replicate"]["image_model"],
+        input={
+            "prompt": prompt,
+            "negative_prompt": negative,
+            "width": cfg["image"]["width"],
+            "height": cfg["image"]["height"],
+            "num_inference_steps": cfg["image"]["steps"],
+            "guidance_scale": cfg["image"]["guidance_scale"],
+            "scheduler": cfg["image"]["scheduler"],
+        }
+    )
+    return requests.get(output[0]).content
 
-    image = client.text_to_image(
-        prompts["positive"],
-        model="stabilityai/stable-diffusion-2-1"
+
+# ── Backend: Local diffusers (no GPU, no AUTOMATIC1111) ─────────────────────
+
+def generate_via_local(prompt: str, negative: str, cfg: dict) -> bytes:
+    import torch
+    from diffusers import StableDiffusionPipeline, DPMSolverMultistepScheduler
+    from io import BytesIO
+
+    model_id = cfg["local"]["model_id"]
+    device   = cfg["local"]["device"]           # "cpu" or "cuda"
+    dtype    = torch.float32 if device == "cpu" else torch.float16
+
+    print(f"   Loading model '{model_id}' on {device} (first run downloads ~2GB)...")
+
+    pipe = StableDiffusionPipeline.from_pretrained(
+        model_id,
+        torch_dtype=dtype,
+        safety_checker=None,   # disable for anime content
+    )
+    pipe.scheduler = DPMSolverMultistepScheduler.from_config(pipe.scheduler.config)
+    pipe = pipe.to(device)
+
+    # CPU memory optimization
+    if device == "cpu":
+        pipe.enable_attention_slicing()
+
+    generator = torch.Generator(device).manual_seed(cfg["image"]["seed"])
+
+    print("   Generating image (CPU mode: expect 3–8 minutes)...")
+    result = pipe(
+        prompt=prompt,
+        negative_prompt=negative,
+        width=cfg["image"]["width"],
+        height=cfg["image"]["height"],
+        num_inference_steps=cfg["image"]["steps"],
+        guidance_scale=cfg["image"]["guidance_scale"],
+        generator=generator,
     )
 
-    elapsed = time.time() - start
-    print(f"[OK] Generated in {elapsed:.1f}s")
-
-    # Save image
-    timestamp = int(time.time())
-    path = OUTPUT_DIR / f"{filename}_{timestamp}.png"
-    image.save(path)
-
-    print(f"[SAVED] {path}")
-
-    return [path]
+    buf = BytesIO()
+    result.images[0].save(buf, format="PNG")
+    return buf.getvalue()
 
 
-# ─── Run ───────────────────────────────────────────────────
+# ── Main ─────────────────────────────────────────────────────────────────────
+
+def generate_image(raw_prompt: str, output_path: str = "assets/generated_images/output.png"):
+    cfg     = load_config()
+    backend = cfg.get("inference_backend", "replicate")
+    prompt, negative = build_prompt(raw_prompt)
+
+    print(f"\n🖼️  Generating image via [{backend}] backend...")
+    print(f"   Prompt: {prompt[:80]}...")
+
+    if backend == "replicate":
+        img_bytes = generate_via_replicate(prompt, negative, cfg)
+    elif backend == "local":
+        img_bytes = generate_via_local(prompt, negative, cfg)
+    else:
+        raise ValueError(f"Unknown backend: '{backend}'. Use 'replicate' or 'local'.")
+
+    out = Path(output_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_bytes(img_bytes)
+    print(f"   ✅ Saved → {out}")
+    return str(out)
+
+
 if __name__ == "__main__":
-    generate_image(
-        raw_text="lone samurai standing on a misty mountain peak at golden hour",
-        scene_preset="dawn",
-        filename="samurai_dawn"
-    )
+    import sys
+    prompt = sys.argv[1] if len(sys.argv) > 1 else "A lone samurai on a misty mountain at dawn"
+    generate_image(prompt)
