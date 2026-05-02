@@ -4,7 +4,13 @@ __pycache__/
 .env
 *.env
 assets/generated_images/
-*.png
-*.jpg
-*.mp4
+# Ignore heavy generated outputs
+assets/generated_images/*
+assets/audio/*
+assets/animation_clips/*
+assets/final_videos/*
+
+# BUT allow samples
+!assets/samples/
+!assets/samples/**
 stable-diffusion-webui/
