@@ -1,12 +1,22 @@
 inference_backend: "local"
 
 local:
-  model_id: "runwayml/stable-diffusion-v1-5"
+  model_id: "dreamlike-art/dreamlike-anime-1.0"
   device: "cpu"
 
 image:
-  width: 512
+  width: 768
   height: 512
+  resize_mode: "crop"
   steps: 20
   guidance_scale: 7.5
   seed: 42
+
+animation:
+  effect: "zoom_in"       # zoom_in | zoom_out | pan_right | pan_left | pan_up | pan_down
+  duration: 3             # seconds
+  fps: 24
+
+voice:
+  speaker: "narrator_m"   # narrator_m | narrator_f | dramatic_m | soft_f | v2/en_speaker_X
+  max_chunk_chars: 200    # Bark max safe chars per synthesis call

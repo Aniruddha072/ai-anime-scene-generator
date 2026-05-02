@@ -1,88 +1,68 @@
 """
 scripts/01_generate_image.py
-Generates anime-style images from a text prompt.
-Supports two backends: 'replicate' (API) or 'local' (diffusers, no GPU needed).
+Generates anime-style images using local Stable Diffusion (diffusers)
 """
 
 import os
 import yaml
-import requests
 from pathlib import Path
+from datetime import datetime
 from dotenv import load_dotenv
 
 load_dotenv()
 
-def load_config() -> dict:
-    with open("config.yaml") as f:
+
+# ── Load config ─────────────────────────────────────────────
+def load_config():
+    with open("config.yaml", "r") as f:
         return yaml.safe_load(f)
 
-# ── Prompt builder (your prompt_engine.py output) ───────────────────────────
 
+# ── Prompt builder ──────────────────────────────────────────
 POSITIVE_SUFFIX = (
     ", masterpiece, best quality, ultra detailed, anime style, "
-    "cinematic composition, by Makoto Shinkai, Studio Ghibli palette, 4k"
+    "cinematic composition, Makoto Shinkai style, Studio Ghibli color palette, 4k, sharp focus"
 )
+
 NEGATIVE_PROMPT = (
-    "lowres, bad anatomy, worst quality, blurry, deformed, "
-    "ugly, watermark, text, 3d render, realistic"
+    "lowres, bad anatomy, worst quality, blurry, deformed, ugly, watermark, text, 3d render"
 )
 
-def build_prompt(raw: str) -> tuple[str, str]:
-    return raw.strip() + POSITIVE_SUFFIX, NEGATIVE_PROMPT
+
+def build_prompt(raw_prompt):
+    positive = raw_prompt.strip() + POSITIVE_SUFFIX
+    return positive, NEGATIVE_PROMPT
 
 
-# ── Backend: Replicate API ───────────────────────────────────────────────────
-
-def generate_via_replicate(prompt: str, negative: str, cfg: dict) -> bytes:
-    import replicate
-    token = os.getenv("REPLICATE_API_TOKEN")
-    if not token:
-        raise EnvironmentError("REPLICATE_API_TOKEN not set in .env")
-    os.environ["REPLICATE_API_TOKEN"] = token
-
-    output = replicate.run(
-        cfg["replicate"]["image_model"],
-        input={
-            "prompt": prompt,
-            "negative_prompt": negative,
-            "width": cfg["image"]["width"],
-            "height": cfg["image"]["height"],
-            "num_inference_steps": cfg["image"]["steps"],
-            "guidance_scale": cfg["image"]["guidance_scale"],
-            "scheduler": cfg["image"]["scheduler"],
-        }
-    )
-    return requests.get(output[0]).content
-
-
-# ── Backend: Local diffusers (no GPU, no AUTOMATIC1111) ─────────────────────
-
-def generate_via_local(prompt: str, negative: str, cfg: dict) -> bytes:
+# ── Local generation (diffusers) ────────────────────────────
+def generate_via_local(prompt, negative, cfg):
     import torch
     from diffusers import StableDiffusionPipeline, DPMSolverMultistepScheduler
     from io import BytesIO
 
     model_id = cfg["local"]["model_id"]
-    device   = cfg["local"]["device"]           # "cpu" or "cuda"
-    dtype    = torch.float32 if device == "cpu" else torch.float16
+    device = cfg["local"]["device"]
 
-    print(f"   Loading model '{model_id}' on {device} (first run downloads ~2GB)...")
+    dtype = torch.float32 if device == "cpu" else torch.float16
+
+    print(f"   Loading model '{model_id}' on {device}...")
 
     pipe = StableDiffusionPipeline.from_pretrained(
         model_id,
         torch_dtype=dtype,
-        safety_checker=None,   # disable for anime content
+        safety_checker=None,
     )
+
     pipe.scheduler = DPMSolverMultistepScheduler.from_config(pipe.scheduler.config)
     pipe = pipe.to(device)
 
-    # CPU memory optimization
     if device == "cpu":
         pipe.enable_attention_slicing()
 
     generator = torch.Generator(device).manual_seed(cfg["image"]["seed"])
 
-    print("   Generating image (CPU mode: expect 3–8 minutes)...")
+    print("   Generating image...")
+
     result = pipe(
         prompt=prompt,
         negative_prompt=negative,
@@ -98,31 +78,46 @@ def generate_via_local(prompt: str, negative: str, cfg: dict) -> bytes:
     return buf.getvalue()
 
 
-# ── Main ─────────────────────────────────────────────────────────────────────
+# ── Main function ───────────────────────────────────────────
+def generate_image(raw_prompt):
+    cfg = load_config()
+    backend = cfg.get("inference_backend", "local")
 
-def generate_image(raw_prompt: str, output_path: str = "assets/generated_images/output.png"):
-    cfg     = load_config()
-    backend = cfg.get("inference_backend", "replicate")
     prompt, negative = build_prompt(raw_prompt)
 
-    print(f"\n🖼️  Generating image via [{backend}] backend...")
-    print(f"   Prompt: {prompt[:80]}...")
+    print(f"\n🖼️ Generating image via [{backend}] backend...")
+    print(f"   Prompt: {prompt[:100]}...")
 
-    if backend == "replicate":
-        img_bytes = generate_via_replicate(prompt, negative, cfg)
-    elif backend == "local":
+    if backend == "local":
         img_bytes = generate_via_local(prompt, negative, cfg)
     else:
-        raise ValueError(f"Unknown backend: '{backend}'. Use 'replicate' or 'local'.")
+        raise ValueError("Only local backend supported for now")
 
-    out = Path(output_path)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_bytes(img_bytes)
-    print(f"   ✅ Saved → {out}")
-    return str(out)
+    # ── Save with timestamp (NO OVERWRITE) ──────────────────
+    output_dir = Path("assets/generated_images")
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    # Optional: include part of prompt in filename
+    safe_prompt = raw_prompt[:20].replace(" ", "_").replace(",", "")
+
+    output_path = output_dir / f"{safe_prompt}_{timestamp}.png"
+
+    output_path.write_bytes(img_bytes)
+
+    print(f"   ✅ Saved → {output_path}")
+
+    return str(output_path)
 
 
+# ── CLI ─────────────────────────────────────────────────────
 if __name__ == "__main__":
     import sys
-    prompt = sys.argv[1] if len(sys.argv) > 1 else "A lone samurai on a misty mountain at dawn"
+
+    if len(sys.argv) > 1:
+        prompt = sys.argv[1]
+    else:
+        prompt = "lone samurai standing on misty mountain at sunrise"
+
     generate_image(prompt)
