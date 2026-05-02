@@ -39,15 +39,15 @@ Prompt
 
 ### 🌄 Scene 1 — Samurai at Dawn
 
-![scene1](assets/samples/scene1.png)
+![scene1](assets/generated_images/Scenario1.png)
 
 ### 🌃 Scene 2 — Cyberpunk Night
 
-![scene2](assets/samples/scene2.png)
+![scene2](assets/generated_images/photo_anime_masterp_20260502_190443.png)
 
 ### 🌅 Scene 3 — Peaceful Village
 
-![scene3](assets/samples/scene3.png)
+![scene3](assets/generated_images/photo_anime_masterp_20260502_203002.png)
 
 ---
 
